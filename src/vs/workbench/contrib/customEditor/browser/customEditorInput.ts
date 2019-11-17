@@ -12,7 +12,7 @@ import { DataUri, isEqual } from 'vs/base/common/resources';
 import { URI } from 'vs/base/common/uri';
 import { ILabelService } from 'vs/platform/label/common/label';
 import { ILifecycleService } from 'vs/platform/lifecycle/common/lifecycle';
-import { IEditorInput, Verbosity } from 'vs/workbench/common/editor';
+import { IEditorInput, Verbosity, GroupIdentifier } from 'vs/workbench/common/editor';
 import { WebviewEditorOverlay } from 'vs/workbench/contrib/webview/browser/webview';
 import { IWebviewWorkbenchService, LazilyResolvedWebviewEditorInput } from 'vs/workbench/contrib/webview/browser/webviewWorkbenchService';
 import { CustomEditorModel } from '../common/customEditorModel';
@@ -126,6 +126,11 @@ export class CustomFileEditorInput extends LazilyResolvedWebviewEditorInput {
 	}
 
 	public save(options?: ISaveOptions): Promise<boolean> {
+		return this._model ? this._model.save(options) : Promise.resolve(false);
+	}
+
+	public saveAs(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean> {
+		// TODO@matt implement properly (see TextEditorInput#saveAs())
 		return this._model ? this._model.save(options) : Promise.resolve(false);
 	}
 

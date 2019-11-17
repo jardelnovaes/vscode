@@ -14,13 +14,16 @@ import { IInstantiationService, IConstructorSignature0, ServicesAccessor, Brande
 import { RawContextKey, ContextKeyExpr } from 'vs/platform/contextkey/common/contextkey';
 import { Registry } from 'vs/platform/registry/common/platform';
 import { ITextModel } from 'vs/editor/common/model';
-import { IEditorGroup } from 'vs/workbench/services/editor/common/editorGroupsService';
+import { IEditorGroup, IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { ICompositeControl } from 'vs/workbench/common/composite';
 import { ActionRunner, IAction } from 'vs/base/common/actions';
 import { IFileService } from 'vs/platform/files/common/files';
 import { IPathData } from 'vs/platform/windows/common/windows';
 import { coalesce, firstOrDefault } from 'vs/base/common/arrays';
 import { ISaveOptions, IRevertOptions } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+import { ITextFileSaveOptions, ITextFileService } from 'vs/workbench/services/textfile/common/textfiles';
+import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
+import { isEqual } from 'vs/base/common/resources';
 
 export const DirtyWorkingCopiesContext = new RawContextKey<boolean>('dirtyWorkingCopies', false);
 export const ActiveEditorContext = new RawContextKey<string | null>('activeEditor', null);
@@ -121,6 +124,17 @@ export interface ITextEditor extends IEditor {
 	 * Returns the underlying text editor widget of this editor.
 	 */
 	getControl(): ICodeEditor | undefined;
+
+	/**
+	 * Returns the current view state of the text editor if any.
+	 */
+	getViewState(): IEditorViewState | undefined;
+}
+
+export function isTextEditor(thing: IEditor | undefined): thing is ITextEditor {
+	const candidate = thing as ITextEditor | undefined;
+
+	return typeof candidate?.getViewState === 'function';
 }
 
 export interface ITextDiffEditor extends IEditor {
@@ -311,9 +325,16 @@ export interface IEditorInput extends IDisposable {
 	isDirty(): boolean;
 
 	/**
-	 * Saves the editor if it is dirty.
+	 * Saves the editor.
 	 */
 	save(options?: ISaveOptions): Promise<boolean>;
+
+	/**
+	 * Saves the editor to a different location. The provided groupId
+	 * helps implementors to e.g. preserve view state of the editor
+	 * and re-open it in the correct group after saving.
+	 */
+	saveAs(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean>;
 
 	/**
 	 * Reverts this input.
@@ -430,6 +451,13 @@ export abstract class EditorInput extends Disposable implements IEditorInput {
 	}
 
 	/**
+	 * Saves the editor to a different location.
+	 */
+	saveAs(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean> {
+		return Promise.resolve(true);
+	}
+
+	/**
 	 * Reverts the editor if it is dirty. Subclasses return a promise with a boolean indicating the success of the operation.
 	 */
 	revert(options?: IRevertOptions): Promise<boolean> {
@@ -466,6 +494,55 @@ export abstract class EditorInput extends Disposable implements IEditorInput {
 		this._onDispose.fire();
 
 		super.dispose();
+	}
+}
+
+export abstract class TextEditorInput extends EditorInput {
+
+	constructor(
+		protected readonly resource: URI,
+		@IEditorService protected readonly editorService: IEditorService,
+		@IEditorGroupsService protected readonly editorGroupService: IEditorGroupsService,
+		@ITextFileService protected readonly textFileService: ITextFileService
+	) {
+		super();
+	}
+
+	getResource(): URI {
+		return this.resource;
+	}
+
+	save(options?: ITextFileSaveOptions): Promise<boolean> {
+		return this.textFileService.save(this.resource, options);
+	}
+
+	saveAs(group: GroupIdentifier, options?: ITextFileSaveOptions): Promise<boolean> {
+		return this.doSaveAs(group, options);
+	}
+
+	protected async doSaveAs(group: GroupIdentifier, options?: ITextFileSaveOptions, replaceAllEditors?: boolean): Promise<boolean> {
+
+		// Preserve view state by opening the editor first
+		let viewState: IEditorViewState | undefined = undefined;
+		const editor = await this.editorService.openEditor(this, undefined, group);
+		if (isTextEditor(editor)) {
+			viewState = editor.getViewState();
+		}
+
+		// Save as
+		const target = await this.textFileService.saveAs(this.resource, undefined, options);
+		if (!target || isEqual(target, this.resource)) {
+			return false; // save canceled or same resource used
+		}
+
+		// Replace editor preserving viewstate (either across all groups or only selected group)
+		const replacement: IResourceInput = { resource: target, options: { pinned: true, viewState } };
+		const targetGroups = replaceAllEditors ? this.editorGroupService.groups.map(group => group.id) : [group];
+		await Promise.all(targetGroups.map(group =>
+			this.editorService.replaceEditors([{ editor: { resource: this.resource }, replacement }], group))
+		);
+
+		return true;
 	}
 }
 
@@ -566,6 +643,10 @@ export class SideBySideEditorInput extends EditorInput {
 
 	save(options?: ISaveOptions): Promise<boolean> {
 		return this.master.save(options);
+	}
+
+	saveAs(groupId: GroupIdentifier, options?: ISaveOptions): Promise<boolean> {
+		return this.master.saveAs(groupId, options);
 	}
 
 	revert(options?: IRevertOptions): Promise<boolean> {

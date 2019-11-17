@@ -23,8 +23,6 @@ import { RawContextKey, IContextKey, IContextKeyService, ContextKeyExpr } from '
 import { IResourceInput } from 'vs/platform/editor/common/editor';
 import { IFileService } from 'vs/platform/files/common/files';
 import { IUntitledTextEditorService } from 'vs/workbench/services/untitled/common/untitledTextEditorService';
-import { IEditorViewState } from 'vs/editor/common/editorCommon';
-import { getCodeEditor } from 'vs/editor/browser/editorBrowser';
 import { KeybindingsRegistry, KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { KeyMod, KeyCode, KeyChord } from 'vs/base/common/keyCodes';
 import { isWindows } from 'vs/base/common/platform';
@@ -38,13 +36,10 @@ import { EditorContextKeys } from 'vs/editor/common/editorContextKeys';
 import { IEditorService, SIDE_GROUP } from 'vs/workbench/services/editor/common/editorService';
 import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { ILabelService } from 'vs/platform/label/common/label';
-import { basename, toLocalResource, joinPath, isEqual } from 'vs/base/common/resources';
+import { basename, joinPath, isEqual } from 'vs/base/common/resources';
 import { IDisposable, dispose } from 'vs/base/common/lifecycle';
-import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 import { UNTITLED_WORKSPACE_NAME } from 'vs/platform/workspaces/common/workspaces';
-import { withUndefinedAsNull, withNullAsUndefined } from 'vs/base/common/types';
-import { assign } from 'vs/base/common/objects';
 
 // Commands
 
@@ -111,99 +106,6 @@ export const newWindowCommand = (accessor: ServicesAccessor, options?: IOpenEmpt
 	hostService.openWindow(options);
 };
 
-async function save(
-	resource: URI | null,
-	isSaveAs: boolean,
-	options: ISaveOptions | undefined,
-	editorService: IEditorService,
-	fileService: IFileService,
-	untitledTextEditorService: IUntitledTextEditorService,
-	textFileService: ITextFileService,
-	editorGroupService: IEditorGroupsService,
-	environmentService: IWorkbenchEnvironmentService
-): Promise<any> {
-	if (!resource || (!fileService.canHandleResource(resource) && resource.scheme !== Schemas.untitled)) {
-		return; // save is not supported
-	}
-
-	// Save As (or Save untitled with associated path)
-	if (isSaveAs || resource.scheme === Schemas.untitled) {
-		return doSaveAs(resource, isSaveAs, options, editorService, fileService, untitledTextEditorService, textFileService, editorGroupService, environmentService);
-	}
-
-	// Pin the active editor if we are saving it
-	const activeControl = editorService.activeControl;
-	const activeEditorResource = activeControl?.input?.getResource();
-	if (activeControl && activeEditorResource && isEqual(activeEditorResource, resource)) {
-		activeControl.group.pinEditor(activeControl.input);
-	}
-
-	// Just save (force a change to the file to trigger external watchers if any)
-	options = assign({ force: true }, options || Object.create(null));
-
-	return textFileService.save(resource, options);
-}
-
-async function doSaveAs(
-	resource: URI,
-	isSaveAs: boolean,
-	options: ISaveOptions | undefined,
-	editorService: IEditorService,
-	fileService: IFileService,
-	untitledTextEditorService: IUntitledTextEditorService,
-	textFileService: ITextFileService,
-	editorGroupService: IEditorGroupsService,
-	environmentService: IWorkbenchEnvironmentService
-): Promise<boolean> {
-	let viewStateOfSource: IEditorViewState | undefined = undefined;
-	const activeTextEditorWidget = getCodeEditor(editorService.activeTextEditorWidget);
-	if (activeTextEditorWidget) {
-		const activeResource = toResource(editorService.activeEditor, { supportSideBySide: SideBySideEditor.MASTER });
-		if (activeResource && (fileService.canHandleResource(activeResource) || resource.scheme === Schemas.untitled) && isEqual(activeResource, resource)) {
-			viewStateOfSource = withNullAsUndefined(activeTextEditorWidget.saveViewState());
-		}
-	}
-
-	// Special case: an untitled file with associated path gets saved directly unless "saveAs" is true
-	let target: URI | undefined;
-	if (!isSaveAs && resource.scheme === Schemas.untitled && untitledTextEditorService.hasAssociatedFilePath(resource)) {
-		const result = await textFileService.save(resource, options);
-		if (result) {
-			target = toLocalResource(resource, environmentService.configuration.remoteAuthority);
-		}
-	}
-
-	// Otherwise, really "Save As..."
-	else {
-
-		// Force a change to the file to trigger external watchers if any
-		// fixes https://github.com/Microsoft/vscode/issues/59655
-		options = assign({ force: true }, options || Object.create(null));
-
-		target = await textFileService.saveAs(resource, undefined, options);
-	}
-
-	if (!target || isEqual(target, resource)) {
-		return false; // save canceled or same resource used
-	}
-
-	const replacement: IResourceInput = {
-		resource: target,
-		options: {
-			pinned: true,
-			viewState: viewStateOfSource
-		}
-	};
-
-	await Promise.all(editorGroupService.groups.map(group =>
-		editorService.replaceEditors([{
-			editor: { resource },
-			replacement
-		}], group)));
-
-	return true;
-}
-
 async function saveAll(saveAllArguments: any, editorService: IEditorService, untitledTextEditorService: IUntitledTextEditorService,
 	textFileService: ITextFileService, editorGroupService: IEditorGroupsService): Promise<any> {
 
@@ -250,34 +152,6 @@ async function saveAll(saveAllArguments: any, editorService: IEditorService, unt
 }
 
 // Command registration
-
-CommandsRegistry.registerCommand({
-	id: REVERT_FILE_COMMAND_ID,
-	handler: async accessor => {
-		const notificationService = accessor.get(INotificationService);
-		const listService = accessor.get(IListService);
-		const editorGroupsService = accessor.get(IEditorGroupsService);
-
-		const editors = getMultiSelectedEditors(listService, editorGroupsService);
-		if (editors.length) {
-			try {
-				await Promise.all(editors.map(async ({ groupId, editor }) => {
-					const resource = editor.getResource();
-					if (resource && resource.scheme === Schemas.untitled) {
-						return; // we do not allow to revert untitled files
-					}
-
-					// Use revert as a hint to pin the editor
-					editorGroupsService.getGroup(groupId)?.pinEditor(editor);
-
-					return editor.revert({ force: true });
-				}));
-			} catch (error) {
-				notificationService.error(nls.localize('genericRevertError', "Failed to revert '{0}': {1}", editors.map(({ editor }) => editor.getName()).join(', '), toErrorMessage(error, false)));
-			}
-		}
-	}
-});
 
 KeybindingsRegistry.registerCommandAndKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
@@ -482,7 +356,9 @@ CommandsRegistry.registerCommand({
 	}
 });
 
-async function saveEditors(accessor: ServicesAccessor, options: ISaveOptions): Promise<boolean> {
+// Save / Save As / Save All / Revert
+
+async function saveEditors(saveAs: boolean, accessor: ServicesAccessor, options: ISaveOptions): Promise<boolean> {
 	const listService = accessor.get(IListService);
 	const editorGroupsService = accessor.get(IEditorGroupsService);
 	const notificationService = accessor.get(INotificationService);
@@ -495,6 +371,12 @@ async function saveEditors(accessor: ServicesAccessor, options: ISaveOptions): P
 				// Use save as a hint to pin the editor
 				editorGroupsService.getGroup(groupId)?.pinEditor(editor);
 
+				// Save As
+				if (saveAs || editor.getResource()?.scheme === Schemas.untitled) {
+					return editor.saveAs(groupId, options);
+				}
+
+				// Save
 				return editor.save(options);
 			}));
 		} catch (error) {
@@ -512,8 +394,8 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyMod.CtrlCmd | KeyCode.KEY_S,
 	id: SAVE_FILE_COMMAND_ID,
-	handler: async (accessor, resource: URI | object) => {
-		return saveEditors(accessor, { force: true });
+	handler: async accessor => {
+		return saveEditors(false, accessor, { force: true });
 	}
 });
 
@@ -524,7 +406,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	win: { primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KEY_K, KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_S) },
 	id: SAVE_FILE_WITHOUT_FORMATTING_COMMAND_ID,
 	handler: async accessor => {
-		return saveEditors(accessor, { force: true, skipSaveParticipants: true });
+		return saveEditors(false, accessor, { force: true, skipSaveParticipants: true });
 	}
 });
 
@@ -533,16 +415,8 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
 	when: undefined,
 	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_S,
-	handler: (accessor, resourceOrObject: URI | object | { from: string }) => {
-		const editorService = accessor.get(IEditorService);
-		let resource: URI | null = null;
-		if (resourceOrObject && 'from' in resourceOrObject && resourceOrObject.from === 'menu') {
-			resource = withUndefinedAsNull(toResource(editorService.activeEditor));
-		} else {
-			resource = withUndefinedAsNull(getResourceForCommand(resourceOrObject, accessor.get(IListService), editorService));
-		}
-
-		return save(resource, true, undefined, editorService, accessor.get(IFileService), accessor.get(IUntitledTextEditorService), accessor.get(ITextFileService), accessor.get(IEditorGroupsService), accessor.get(IWorkbenchEnvironmentService));
+	handler: async accessor => {
+		return saveEditors(true, accessor, { force: true });
 	}
 });
 
@@ -587,6 +461,34 @@ CommandsRegistry.registerCommand({
 		const workingCopyService = accessor.get(IWorkingCopyService);
 
 		return workingCopyService.saveAll();
+	}
+});
+
+CommandsRegistry.registerCommand({
+	id: REVERT_FILE_COMMAND_ID,
+	handler: async accessor => {
+		const notificationService = accessor.get(INotificationService);
+		const listService = accessor.get(IListService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+
+		const editors = getMultiSelectedEditors(listService, editorGroupsService);
+		if (editors.length) {
+			try {
+				await Promise.all(editors.map(async ({ groupId, editor }) => {
+					const resource = editor.getResource();
+					if (resource && resource.scheme === Schemas.untitled) {
+						return; // we do not allow to revert untitled files
+					}
+
+					// Use revert as a hint to pin the editor
+					editorGroupsService.getGroup(groupId)?.pinEditor(editor);
+
+					return editor.revert({ force: true });
+				}));
+			} catch (error) {
+				notificationService.error(nls.localize('genericRevertError', "Failed to revert '{0}': {1}", editors.map(({ editor }) => editor.getName()).join(', '), toErrorMessage(error, false)));
+			}
+		}
 	}
 });
 
