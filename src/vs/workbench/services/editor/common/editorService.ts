@@ -10,7 +10,7 @@ import { Event } from 'vs/base/common/event';
 import { IEditor as ICodeEditor } from 'vs/editor/common/editorCommon';
 import { IEditorGroup, IEditorReplacement } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { IDisposable } from 'vs/base/common/lifecycle';
-import { ISaveOptions } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+import { ISaveOptions, IRevertOptions } from 'vs/workbench/services/workingCopy/common/workingCopyService';
 
 export const IEditorService = createDecorator<IEditorService>('editorService');
 
@@ -212,4 +212,9 @@ export interface IEditorService {
 	 * Save all editors.
 	 */
 	saveAll(options?: ISaveAllEditorsOptions): Promise<boolean>;
+
+	/**
+	 * Reverts all editors.
+	 */
+	revertAll(options?: IRevertOptions): Promise<void>;
 }

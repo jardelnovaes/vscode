@@ -15,7 +15,6 @@ import { IFileMatch, IPatternInfo, ISearchProgressItem, ISearchService } from 'v
 import { IWorkspaceContextService, WorkbenchState, IWorkspace } from 'vs/platform/workspace/common/workspace';
 import { extHostNamedCustomer } from 'vs/workbench/api/common/extHostCustomers';
 import { ITextQueryBuilderOptions, QueryBuilder } from 'vs/workbench/contrib/search/common/queryBuilder';
-import { ITextFileService } from 'vs/workbench/services/textfile/common/textfiles';
 import { IWorkspaceEditingService } from 'vs/workbench/services/workspaces/common/workspaceEditing';
 import { ExtHostContext, ExtHostWorkspaceShape, IExtHostContext, MainContext, MainThreadWorkspaceShape, IWorkspaceData, ITextSearchComplete } from '../common/extHost.protocol';
 import { IEnvironmentService } from 'vs/platform/environment/common/environment';
@@ -24,6 +23,7 @@ import { INotificationService } from 'vs/platform/notification/common/notificati
 import { withNullAsUndefined } from 'vs/base/common/types';
 import { IFileService } from 'vs/platform/files/common/files';
 import { IRequestService } from 'vs/platform/request/common/request';
+import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
 
 @extHostNamedCustomer(MainContext.MainThreadWorkspace)
 export class MainThreadWorkspace implements MainThreadWorkspaceShape {
@@ -37,14 +37,14 @@ export class MainThreadWorkspace implements MainThreadWorkspaceShape {
 		extHostContext: IExtHostContext,
 		@ISearchService private readonly _searchService: ISearchService,
 		@IWorkspaceContextService private readonly _contextService: IWorkspaceContextService,
-		@ITextFileService private readonly _textFileService: ITextFileService,
 		@IWorkspaceEditingService private readonly _workspaceEditingService: IWorkspaceEditingService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@IRequestService private readonly _requestService: IRequestService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ILabelService private readonly _labelService: ILabelService,
 		@IEnvironmentService private readonly _environmentService: IEnvironmentService,
-		@IFileService fileService: IFileService
+		@IFileService fileService: IFileService,
+		@IEditorService private readonly _editorService: IEditorService
 	) {
 		this._proxy = extHostContext.getProxy(ExtHostContext.ExtHostWorkspace);
 		const workspace = this._contextService.getWorkspace();
@@ -212,9 +212,7 @@ export class MainThreadWorkspace implements MainThreadWorkspaceShape {
 	// --- save & edit resources ---
 
 	$saveAll(includeUntitled?: boolean): Promise<boolean> {
-		return this._textFileService.saveAll(includeUntitled).then(result => {
-			return result.results.every(each => each.success === true);
-		});
+		return this._editorService.saveAll({ includeUntitled });
 	}
 
 	$resolveProxy(url: string): Promise<string | undefined> {

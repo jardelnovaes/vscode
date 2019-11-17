@@ -28,6 +28,7 @@ import { IEditorGroupView, IEditorOpeningEvent, EditorServiceImpl } from 'vs/wor
 import { ILabelService } from 'vs/platform/label/common/label';
 import { registerSingleton } from 'vs/platform/instantiation/common/extensions';
 import { withNullAsUndefined } from 'vs/base/common/types';
+import { IRevertOptions } from 'vs/workbench/services/workingCopy/common/workingCopyService';
 
 type CachedEditorInput = ResourceEditorInput | IFileEditorInput | DataUriEditorInput;
 type OpenInEditorGroup = IEditorGroup | GroupIdentifier | SIDE_GROUP_TYPE | ACTIVE_GROUP_TYPE;
@@ -712,15 +713,32 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		const editors: IEditorIdentifier[] = [];
 
 		// Collect all editors in MRU order that are dirty
+		this.forEachDirtyEditor(({ groupId, editor }) => {
+			if (!editor.isUntitled() || options?.includeUntitled) {
+				editors.push({ groupId, editor });
+			}
+		});
+
+		return this.save(editors, options);
+	}
+
+	async revertAll(options?: IRevertOptions): Promise<void> {
+
+		// Revert each editor in MRU order
+		const reverts: Promise<boolean>[] = [];
+		this.forEachDirtyEditor(({ editor }) => reverts.push(editor.revert(options)));
+
+		await Promise.all(reverts);
+	}
+
+	private forEachDirtyEditor(callback: (editor: IEditorIdentifier) => void): void {
 		for (const group of this.editorGroupService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)) {
 			for (const editor of group.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)) {
-				if (editor.isDirty() && (!editor.isUntitled() || options?.includeUntitled)) {
-					editors.push({ groupId: group.id, editor });
+				if (editor.isDirty()) {
+					callback({ groupId: group.id, editor });
 				}
 			}
 		}
-
-		return this.save(editors, options);
 	}
 
 	//#endregion

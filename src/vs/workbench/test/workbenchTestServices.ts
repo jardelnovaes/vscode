@@ -92,7 +92,7 @@ import { IBackupMainService, IWorkspaceBackupInfo } from 'vs/platform/backup/ele
 import { IEmptyWindowBackupInfo } from 'vs/platform/backup/node/backup';
 import { IDialogMainService } from 'vs/platform/dialogs/electron-main/dialogs';
 import { find } from 'vs/base/common/arrays';
-import { WorkingCopyService, IWorkingCopyService } from 'vs/workbench/services/workingCopy/common/workingCopyService';
+import { WorkingCopyService, IWorkingCopyService, IRevertOptions } from 'vs/workbench/services/workingCopy/common/workingCopyService';
 import { IFilesConfigurationService, FilesConfigurationService } from 'vs/workbench/services/filesConfiguration/common/filesConfigurationService';
 
 export function createFileInput(instantiationService: IInstantiationService, resource: URI): FileEditorInput {
@@ -927,6 +927,10 @@ export class TestEditorService implements EditorServiceImpl {
 	}
 
 	saveAll(options?: ISaveEditorsOptions): Promise<boolean> {
+		throw new Error('Method not implemented.');
+	}
+
+	revertAll(options?: IRevertOptions): Promise<void> {
 		throw new Error('Method not implemented.');
 	}
 }
