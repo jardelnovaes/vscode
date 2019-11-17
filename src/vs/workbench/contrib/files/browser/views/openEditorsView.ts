@@ -411,25 +411,13 @@ export class OpenEditorsView extends ViewletPanel {
 	}
 
 	private updateDirtyIndicator(): void {
-		let dirty = this.dirtyCount;
+		let dirty = this.workingCopyService.dirtyCount;
 		if (dirty === 0) {
 			dom.addClass(this.dirtyCountElement, 'hidden');
 		} else {
 			this.dirtyCountElement.textContent = nls.localize('dirtyCounter', "{0} unsaved", dirty);
 			dom.removeClass(this.dirtyCountElement, 'hidden');
 		}
-	}
-
-	private get dirtyCount(): number {
-		let dirtyCount = 0;
-
-		for (const element of this.elements) {
-			if (element instanceof OpenEditor && element.editor.isDirty()) {
-				dirtyCount++;
-			}
-		}
-
-		return dirtyCount;
 	}
 
 	private get elementCount(): number {
