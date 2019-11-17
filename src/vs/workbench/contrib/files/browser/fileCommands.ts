@@ -5,7 +5,7 @@
 
 import * as nls from 'vs/nls';
 import { URI } from 'vs/base/common/uri';
-import { toResource, IEditorCommandsContext, SideBySideEditor } from 'vs/workbench/common/editor';
+import { toResource, IEditorCommandsContext, SideBySideEditor, IEditorIdentifier } from 'vs/workbench/common/editor';
 import { IWindowOpenable, IOpenWindowOptions, isWorkspaceToOpen, IOpenEmptyWindowOptions } from 'vs/platform/windows/common/windows';
 import { IHostService } from 'vs/workbench/services/host/browser/host';
 import { ServicesAccessor, IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
@@ -14,15 +14,12 @@ import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace
 import { ExplorerFocusCondition, TextFileContentProvider, VIEWLET_ID, IExplorerService, ExplorerCompressedFocusContext, ExplorerCompressedFirstFocusContext, ExplorerCompressedLastFocusContext, FilesExplorerFocusCondition } from 'vs/workbench/contrib/files/common/files';
 import { ExplorerViewlet } from 'vs/workbench/contrib/files/browser/explorerViewlet';
 import { IClipboardService } from 'vs/platform/clipboard/common/clipboardService';
-import { ITextFileService } from 'vs/workbench/services/textfile/common/textfiles';
 import { ISaveOptions, IWorkingCopyService } from 'vs/workbench/services/workingCopy/common/workingCopyService';
 import { toErrorMessage } from 'vs/base/common/errorMessage';
 import { IListService } from 'vs/platform/list/browser/listService';
 import { CommandsRegistry } from 'vs/platform/commands/common/commands';
 import { RawContextKey, IContextKey, IContextKeyService, ContextKeyExpr } from 'vs/platform/contextkey/common/contextkey';
-import { IResourceInput } from 'vs/platform/editor/common/editor';
 import { IFileService } from 'vs/platform/files/common/files';
-import { IUntitledTextEditorService } from 'vs/workbench/services/untitled/common/untitledTextEditorService';
 import { KeybindingsRegistry, KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { KeyMod, KeyCode, KeyChord } from 'vs/base/common/keyCodes';
 import { isWindows } from 'vs/base/common/platform';
@@ -34,7 +31,7 @@ import { Schemas } from 'vs/base/common/network';
 import { INotificationService } from 'vs/platform/notification/common/notification';
 import { EditorContextKeys } from 'vs/editor/common/editorContextKeys';
 import { IEditorService, SIDE_GROUP } from 'vs/workbench/services/editor/common/editorService';
-import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
+import { IEditorGroupsService, GroupsOrder, EditorsOrder, IEditorGroup } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { ILabelService } from 'vs/platform/label/common/label';
 import { basename, joinPath, isEqual } from 'vs/base/common/resources';
 import { IDisposable, dispose } from 'vs/base/common/lifecycle';
@@ -105,51 +102,6 @@ export const newWindowCommand = (accessor: ServicesAccessor, options?: IOpenEmpt
 	const hostService = accessor.get(IHostService);
 	hostService.openWindow(options);
 };
-
-async function saveAll(saveAllArguments: any, editorService: IEditorService, untitledTextEditorService: IUntitledTextEditorService,
-	textFileService: ITextFileService, editorGroupService: IEditorGroupsService): Promise<any> {
-
-	// Store some properties per untitled file to restore later after save is completed
-	const groupIdToUntitledResourceInput = new Map<number, IResourceInput[]>();
-
-	editorGroupService.groups.forEach(group => {
-		const activeEditorResource = group.activeEditor && group.activeEditor.getResource();
-		group.editors.forEach(e => {
-			const resource = e.getResource();
-			if (resource && untitledTextEditorService.isDirty(resource)) {
-				if (!groupIdToUntitledResourceInput.has(group.id)) {
-					groupIdToUntitledResourceInput.set(group.id, []);
-				}
-
-				groupIdToUntitledResourceInput.get(group.id)!.push({
-					encoding: untitledTextEditorService.getEncoding(resource),
-					resource,
-					options: {
-						inactive: activeEditorResource ? !isEqual(activeEditorResource, resource) : true,
-						pinned: true,
-						preserveFocus: true,
-						index: group.getIndexOfEditor(e)
-					}
-				});
-			}
-		});
-	});
-
-	// Save all
-	const result = await textFileService.saveAll(saveAllArguments);
-
-	// Update untitled resources to the saved ones, so we open the proper files
-	groupIdToUntitledResourceInput.forEach((inputs, groupId) => {
-		inputs.forEach(i => {
-			const targetResult = result.results.filter(r => r.success && isEqual(r.source, i.resource)).pop();
-			if (targetResult?.target) {
-				i.resource = targetResult.target;
-			}
-		});
-
-		editorService.openEditors(inputs, groupId);
-	});
-}
 
 // Command registration
 
@@ -358,35 +310,79 @@ CommandsRegistry.registerCommand({
 
 // Save / Save As / Save All / Revert
 
-async function saveEditors(saveAs: boolean, accessor: ServicesAccessor, options: ISaveOptions): Promise<boolean> {
+function saveSelectedEditors(accessor: ServicesAccessor, saveAs: boolean, options?: ISaveOptions): Promise<void> {
 	const listService = accessor.get(IListService);
 	const editorGroupsService = accessor.get(IEditorGroupsService);
-	const notificationService = accessor.get(INotificationService);
 
 	const saveableEditors = getMultiSelectedEditors(listService, editorGroupsService).filter(({ editor }) => !editor.isReadonly());
-	if (saveableEditors.length) {
+
+	return doSaveEditors(accessor, saveableEditors, saveAs, options);
+}
+
+function saveAllEditors(accessor: ServicesAccessor, groups = accessor.get(IEditorGroupsService).getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE), options?: ISaveOptions): Promise<void> {
+	const saveableEditors: IEditorIdentifier[] = [];
+	for (const group of groups) {
+		for (const editor of group.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)) {
+			if (editor.isDirty()) {
+				saveableEditors.push({ groupId: group.id, editor });
+			}
+		}
+	}
+
+	return doSaveEditors(accessor, saveableEditors, false, options);
+}
+
+async function doSaveEditors(accessor: ServicesAccessor, editors: IEditorIdentifier[], saveAs: boolean, options?: ISaveOptions): Promise<void> {
+	if (editors.length) {
+		const notificationService = accessor.get(INotificationService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
+
+		// Split editors up into a bucket that is saved in parallel
+		// and sequentially. Unless "Save As", all non-untitled editors
+		// can be saved in parallel to speed up the operation. Remaining
+		// editors are potentially bringing up some UI and thus run
+		// sequentially.
+		const editorsToSaveParallel: IEditorIdentifier[] = [];
+		const editorsToSaveSequentially: IEditorIdentifier[] = [];
+		if (saveAs) {
+			editorsToSaveSequentially.push(...editors);
+		} else {
+			for (const { groupId, editor } of editors) {
+				if (editor.getResource()?.scheme === Schemas.untitled) {
+					editorsToSaveSequentially.push({ groupId, editor });
+				} else {
+					editorsToSaveParallel.push({ groupId, editor });
+				}
+			}
+		}
+
 		try {
-			await Promise.all(saveableEditors.map(async ({ groupId, editor }) => {
+
+			// Editors to save in parallel
+			await Promise.all(editorsToSaveParallel.map(({ groupId, editor }) => {
 
 				// Use save as a hint to pin the editor
 				editorGroupsService.getGroup(groupId)?.pinEditor(editor);
 
-				// Save As
-				if (saveAs || editor.getResource()?.scheme === Schemas.untitled) {
-					return editor.saveAs(groupId, options);
-				}
-
 				// Save
 				return editor.save(options);
 			}));
+
+			// Editors to save sequentially
+			for (const { groupId, editor } of editorsToSaveSequentially) {
+				if (editor.isDisposed()) {
+					continue; // might have been disposed from from the save already
+				}
+
+				const result = await editor.saveAs(groupId, options);
+				if (!result) {
+					break; // failed or cancelled, abort
+				}
+			}
 		} catch (error) {
-			notificationService.error(nls.localize('genericSaveError', "Failed to save '{0}': {1}", saveableEditors.map(({ editor }) => editor.getName()).join(', '), toErrorMessage(error, false)));
+			notificationService.error(nls.localize('genericSaveError', "Failed to save '{0}': {1}", editors.map(({ editor }) => editor.getName()).join(', '), toErrorMessage(error, false)));
 		}
-
-		return true;
 	}
-
-	return false;
 }
 
 KeybindingsRegistry.registerCommandAndKeybindingRule({
@@ -394,8 +390,8 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyMod.CtrlCmd | KeyCode.KEY_S,
 	id: SAVE_FILE_COMMAND_ID,
-	handler: async accessor => {
-		return saveEditors(false, accessor, { force: true });
+	handler: accessor => {
+		return saveSelectedEditors(accessor, false, { force: true });
 	}
 });
 
@@ -405,8 +401,8 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KEY_K, KeyCode.KEY_S),
 	win: { primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KEY_K, KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_S) },
 	id: SAVE_FILE_WITHOUT_FORMATTING_COMMAND_ID,
-	handler: async accessor => {
-		return saveEditors(false, accessor, { force: true, skipSaveParticipants: true });
+	handler: accessor => {
+		return saveSelectedEditors(accessor, false, { force: true, skipSaveParticipants: true });
 	}
 });
 
@@ -415,43 +411,42 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
 	when: undefined,
 	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_S,
-	handler: async accessor => {
-		return saveEditors(true, accessor, { force: true });
+	handler: accessor => {
+		return saveSelectedEditors(accessor, true);
 	}
 });
 
 CommandsRegistry.registerCommand({
 	id: SAVE_ALL_COMMAND_ID,
 	handler: (accessor) => {
-		return saveAll(true, accessor.get(IEditorService), accessor.get(IUntitledTextEditorService), accessor.get(ITextFileService), accessor.get(IEditorGroupsService));
+		return saveAllEditors(accessor);
 	}
 });
 
 CommandsRegistry.registerCommand({
 	id: SAVE_ALL_IN_GROUP_COMMAND_ID,
 	handler: (accessor, _: URI | object, editorContext: IEditorCommandsContext) => {
-		const contexts = getMultiSelectedEditorContexts(editorContext, accessor.get(IListService), accessor.get(IEditorGroupsService));
 		const editorGroupService = accessor.get(IEditorGroupsService);
-		let saveAllArg: any;
+
+		const contexts = getMultiSelectedEditorContexts(editorContext, accessor.get(IListService), accessor.get(IEditorGroupsService));
+
+		let groups: IEditorGroup[] | undefined = undefined;
 		if (!contexts.length) {
-			saveAllArg = true;
+			groups = [...editorGroupService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)];
 		} else {
-			const fileService = accessor.get(IFileService);
-			saveAllArg = [];
 			contexts.forEach(context => {
 				const editorGroup = editorGroupService.getGroup(context.groupId);
 				if (editorGroup) {
-					editorGroup.editors.forEach(editor => {
-						const resource = toResource(editor, { supportSideBySide: SideBySideEditor.MASTER });
-						if (resource && (resource.scheme === Schemas.untitled || fileService.canHandleResource(resource))) {
-							saveAllArg.push(resource);
-						}
-					});
+					if (!groups) {
+						groups = [];
+					}
+
+					groups.push(editorGroup);
 				}
 			});
 		}
 
-		return saveAll(saveAllArg, accessor.get(IEditorService), accessor.get(IUntitledTextEditorService), accessor.get(ITextFileService), accessor.get(IEditorGroupsService));
+		return saveAllEditors(accessor, groups);
 	}
 });
 

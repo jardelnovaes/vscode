@@ -345,6 +345,11 @@ export interface IEditorInput extends IDisposable {
 	 * Returns if the other object matches this input.
 	 */
 	matches(other: unknown): boolean;
+
+	/**
+	 * Returns if this editor is disposed.
+	 */
+	isDisposed(): boolean;
 }
 
 /**
@@ -531,16 +536,19 @@ export abstract class TextEditorInput extends EditorInput {
 
 		// Save as
 		const target = await this.textFileService.saveAs(this.resource, undefined, options);
-		if (!target || isEqual(target, this.resource)) {
-			return false; // save canceled or same resource used
+		if (!target) {
+			return false; // save cancelled
 		}
 
-		// Replace editor preserving viewstate (either across all groups or only selected group)
-		const replacement: IResourceInput = { resource: target, options: { pinned: true, viewState } };
-		const targetGroups = replaceAllEditors ? this.editorGroupService.groups.map(group => group.id) : [group];
-		await Promise.all(targetGroups.map(group =>
-			this.editorService.replaceEditors([{ editor: { resource: this.resource }, replacement }], group))
-		);
+		// Replace editor preserving viewstate (either across all groups or
+		// only selected group) if the target is different from the current resource
+		if (!isEqual(target, this.resource)) {
+			const replacement: IResourceInput = { resource: target, options: { pinned: true, viewState } };
+			const targetGroups = replaceAllEditors ? this.editorGroupService.groups.map(group => group.id) : [group];
+			for (const group of targetGroups) {
+				await this.editorService.replaceEditors([{ editor: { resource: this.resource }, replacement }], group);
+			}
+		}
 
 		return true;
 	}
