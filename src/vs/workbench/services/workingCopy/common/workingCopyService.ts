@@ -68,17 +68,6 @@ export interface ISaveOptions {
 	skipSaveParticipants?: boolean;
 }
 
-export interface ISaveAllOptions extends ISaveOptions {
-
-	/**
-	 * Wether to include any untitled working copies when
-	 * saving all. Untitled working copies may trigger
-	 * a dialog to ask for a path so they are not included
-	 * by default.
-	 */
-	includeUntitled?: boolean;
-}
-
 export interface IRevertOptions {
 
 	/**
@@ -136,13 +125,6 @@ export interface IWorkingCopyService {
 	isDirty(resource: URI): boolean;
 
 	getDirty(...resources: URI[]): IWorkingCopy[];
-
-	//#endregion
-
-
-	//#region Save/Revert
-
-	saveAll(): Promise<boolean>;
 
 	//#endregion
 
@@ -224,23 +206,6 @@ export class WorkingCopyService extends Disposable implements IWorkingCopyServic
 		}
 
 		return totalDirtyCount;
-	}
-
-	//#endregion
-
-
-	//#region Save/Revert
-
-	async saveAll(options?: ISaveAllOptions): Promise<boolean> {
-		const result = await Promise.all(this.getDirty().map(async workingCopy => {
-			if (!options?.includeUntitled && !!(workingCopy.capabilities & WorkingCopyCapabilities.Untitled)) {
-				return undefined; // only untitled
-			}
-
-			return workingCopy.save(options);
-		}));
-
-		return result.every(res => !!res);
 	}
 
 	//#endregion

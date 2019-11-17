@@ -14,7 +14,6 @@ import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace
 import { ExplorerFocusCondition, TextFileContentProvider, VIEWLET_ID, IExplorerService, ExplorerCompressedFocusContext, ExplorerCompressedFirstFocusContext, ExplorerCompressedLastFocusContext, FilesExplorerFocusCondition } from 'vs/workbench/contrib/files/common/files';
 import { ExplorerViewlet } from 'vs/workbench/contrib/files/browser/explorerViewlet';
 import { IClipboardService } from 'vs/platform/clipboard/common/clipboardService';
-import { ISaveOptions, IWorkingCopyService } from 'vs/workbench/services/workingCopy/common/workingCopyService';
 import { toErrorMessage } from 'vs/base/common/errorMessage';
 import { IListService } from 'vs/platform/list/browser/listService';
 import { CommandsRegistry } from 'vs/platform/commands/common/commands';
@@ -30,7 +29,7 @@ import { getMultiSelectedEditorContexts } from 'vs/workbench/browser/parts/edito
 import { Schemas } from 'vs/base/common/network';
 import { INotificationService } from 'vs/platform/notification/common/notification';
 import { EditorContextKeys } from 'vs/editor/common/editorContextKeys';
-import { IEditorService, SIDE_GROUP } from 'vs/workbench/services/editor/common/editorService';
+import { IEditorService, SIDE_GROUP, ISaveEditorsOptions } from 'vs/workbench/services/editor/common/editorService';
 import { IEditorGroupsService, GroupsOrder, EditorsOrder, IEditorGroup } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { ILabelService } from 'vs/platform/label/common/label';
 import { basename, joinPath, isEqual } from 'vs/base/common/resources';
@@ -310,16 +309,16 @@ CommandsRegistry.registerCommand({
 
 // Save / Save As / Save All / Revert
 
-function saveSelectedEditors(accessor: ServicesAccessor, saveAs: boolean, options?: ISaveOptions): Promise<void> {
+function saveSelectedEditors(accessor: ServicesAccessor, options?: ISaveEditorsOptions): Promise<void> {
 	const listService = accessor.get(IListService);
 	const editorGroupsService = accessor.get(IEditorGroupsService);
 
 	const saveableEditors = getMultiSelectedEditors(listService, editorGroupsService).filter(({ editor }) => !editor.isReadonly());
 
-	return doSaveEditors(accessor, saveableEditors, saveAs, options);
+	return doSaveEditors(accessor, saveableEditors, options);
 }
 
-function saveAllEditors(accessor: ServicesAccessor, groups = accessor.get(IEditorGroupsService).getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE), options?: ISaveOptions): Promise<void> {
+function saveEditorsOfGroups(accessor: ServicesAccessor, groups = accessor.get(IEditorGroupsService).getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE), options?: ISaveEditorsOptions): Promise<void> {
 	const saveableEditors: IEditorIdentifier[] = [];
 	for (const group of groups) {
 		for (const editor of group.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)) {
@@ -329,59 +328,17 @@ function saveAllEditors(accessor: ServicesAccessor, groups = accessor.get(IEdito
 		}
 	}
 
-	return doSaveEditors(accessor, saveableEditors, false, options);
+	return doSaveEditors(accessor, saveableEditors, options);
 }
 
-async function doSaveEditors(accessor: ServicesAccessor, editors: IEditorIdentifier[], saveAs: boolean, options?: ISaveOptions): Promise<void> {
-	if (editors.length) {
-		const notificationService = accessor.get(INotificationService);
-		const editorGroupsService = accessor.get(IEditorGroupsService);
+async function doSaveEditors(accessor: ServicesAccessor, editors: IEditorIdentifier[], options?: ISaveEditorsOptions): Promise<void> {
+	const editorService = accessor.get(IEditorService);
+	const notificationService = accessor.get(INotificationService);
 
-		// Split editors up into a bucket that is saved in parallel
-		// and sequentially. Unless "Save As", all non-untitled editors
-		// can be saved in parallel to speed up the operation. Remaining
-		// editors are potentially bringing up some UI and thus run
-		// sequentially.
-		const editorsToSaveParallel: IEditorIdentifier[] = [];
-		const editorsToSaveSequentially: IEditorIdentifier[] = [];
-		if (saveAs) {
-			editorsToSaveSequentially.push(...editors);
-		} else {
-			for (const { groupId, editor } of editors) {
-				if (editor.getResource()?.scheme === Schemas.untitled) {
-					editorsToSaveSequentially.push({ groupId, editor });
-				} else {
-					editorsToSaveParallel.push({ groupId, editor });
-				}
-			}
-		}
-
-		try {
-
-			// Editors to save in parallel
-			await Promise.all(editorsToSaveParallel.map(({ groupId, editor }) => {
-
-				// Use save as a hint to pin the editor
-				editorGroupsService.getGroup(groupId)?.pinEditor(editor);
-
-				// Save
-				return editor.save(options);
-			}));
-
-			// Editors to save sequentially
-			for (const { groupId, editor } of editorsToSaveSequentially) {
-				if (editor.isDisposed()) {
-					continue; // might have been disposed from from the save already
-				}
-
-				const result = await editor.saveAs(groupId, options);
-				if (!result) {
-					break; // failed or cancelled, abort
-				}
-			}
-		} catch (error) {
-			notificationService.error(nls.localize('genericSaveError', "Failed to save '{0}': {1}", editors.map(({ editor }) => editor.getName()).join(', '), toErrorMessage(error, false)));
-		}
+	try {
+		await editorService.save(editors, options);
+	} catch (error) {
+		notificationService.error(nls.localize('genericSaveError', "Failed to save '{0}': {1}", editors.map(({ editor }) => editor.getName()).join(', '), toErrorMessage(error, false)));
 	}
 }
 
@@ -391,7 +348,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	primary: KeyMod.CtrlCmd | KeyCode.KEY_S,
 	id: SAVE_FILE_COMMAND_ID,
 	handler: accessor => {
-		return saveSelectedEditors(accessor, false, { force: true });
+		return saveSelectedEditors(accessor, { force: true });
 	}
 });
 
@@ -402,7 +359,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	win: { primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KEY_K, KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_S) },
 	id: SAVE_FILE_WITHOUT_FORMATTING_COMMAND_ID,
 	handler: accessor => {
-		return saveSelectedEditors(accessor, false, { force: true, skipSaveParticipants: true });
+		return saveSelectedEditors(accessor, { force: true, skipSaveParticipants: true });
 	}
 });
 
@@ -412,14 +369,14 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	when: undefined,
 	primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KEY_S,
 	handler: accessor => {
-		return saveSelectedEditors(accessor, true);
+		return saveSelectedEditors(accessor, { saveAs: true });
 	}
 });
 
 CommandsRegistry.registerCommand({
 	id: SAVE_ALL_COMMAND_ID,
 	handler: (accessor) => {
-		return saveAllEditors(accessor);
+		return saveEditorsOfGroups(accessor);
 	}
 });
 
@@ -446,16 +403,16 @@ CommandsRegistry.registerCommand({
 			});
 		}
 
-		return saveAllEditors(accessor, groups);
+		return saveEditorsOfGroups(accessor, groups);
 	}
 });
 
 CommandsRegistry.registerCommand({
 	id: SAVE_FILES_COMMAND_ID,
 	handler: accessor => {
-		const workingCopyService = accessor.get(IWorkingCopyService);
+		const editorService = accessor.get(IEditorService);
 
-		return workingCopyService.saveAll();
+		return editorService.saveAll({ includeUntitled: false });
 	}
 });
 
@@ -470,9 +427,8 @@ CommandsRegistry.registerCommand({
 		if (editors.length) {
 			try {
 				await Promise.all(editors.map(async ({ groupId, editor }) => {
-					const resource = editor.getResource();
-					if (resource && resource.scheme === Schemas.untitled) {
-						return; // we do not allow to revert untitled files
+					if (editor.isUntitled()) {
+						return; // we do not allow to revert untitled editors
 					}
 
 					// Use revert as a hint to pin the editor

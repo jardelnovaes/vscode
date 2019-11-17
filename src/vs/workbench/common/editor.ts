@@ -320,6 +320,11 @@ export interface IEditorInput extends IDisposable {
 	isReadonly(): boolean;
 
 	/**
+	 * Returns if the input is an untitled editor or not.
+	 */
+	isUntitled(): boolean;
+
+	/**
 	 * Returns if this input is dirty or not.
 	 */
 	isDirty(): boolean;
@@ -439,6 +444,14 @@ export abstract class EditorInput extends Disposable implements IEditorInput {
 	isReadonly(): boolean {
 		// Subclasses need to explicitly opt-in to being editable.
 		return !this.isDirty();
+	}
+
+	/**
+	 * Returns if the input is an untitled editor or not.
+	 */
+	isUntitled(): boolean {
+		// Subclasses need to explicitly opt-in to being untitled.
+		return false;
 	}
 
 	/**
@@ -643,6 +656,10 @@ export class SideBySideEditorInput extends EditorInput {
 
 	isReadonly(): boolean {
 		return this.master.isReadonly();
+	}
+
+	isUntitled(): boolean {
+		return this.master.isUntitled();
 	}
 
 	isDirty(): boolean {

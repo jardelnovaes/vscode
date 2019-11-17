@@ -135,6 +135,10 @@ export class UntitledTextEditorInput extends TextEditorInput implements IEncodin
 		return false;
 	}
 
+	isUntitled(): boolean {
+		return true;
+	}
+
 	isDirty(): boolean {
 		if (this.cachedModel) {
 			return this.cachedModel.isDirty();
