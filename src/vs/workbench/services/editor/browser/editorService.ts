@@ -671,13 +671,13 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		// editors are potentially bringing up some UI and thus run
 		// sequentially.
 		const editorsToSaveParallel: IEditorIdentifier[] = [];
-		const editorsToSaveSequentially: IEditorIdentifier[] = [];
+		const editorsToSaveAsSequentially: IEditorIdentifier[] = [];
 		if (options?.saveAs) {
-			editorsToSaveSequentially.push(...editors);
+			editorsToSaveAsSequentially.push(...editors);
 		} else {
 			for (const { groupId, editor } of editors) {
-				if (editor.getResource()?.scheme === Schemas.untitled) {
-					editorsToSaveSequentially.push({ groupId, editor });
+				if (editor.isUntitled()) {
+					editorsToSaveAsSequentially.push({ groupId, editor });
 				} else {
 					editorsToSaveParallel.push({ groupId, editor });
 				}
@@ -695,7 +695,7 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		}));
 
 		// Editors to save sequentially
-		for (const { groupId, editor } of editorsToSaveSequentially) {
+		for (const { groupId, editor } of editorsToSaveAsSequentially) {
 			if (editor.isDisposed()) {
 				continue; // might have been disposed from from the save already
 			}
